@@ -4,7 +4,9 @@ module truthbound_addr::escalation_manager_test {
     use truthbound_addr::escalation_manager;
 
     use std::bcs;
+
     use aptos_std::smart_table::{SmartTable};
+    
     use aptos_framework::timestamp;
     use aptos_framework::event::{ was_event_emitted };
 

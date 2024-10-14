@@ -352,11 +352,9 @@ module truthbound_addr::data_asserter {
                 assert!(whitelistedBool, ERROR_NOT_WHITELISTED_ASSERTER);
             };
         };
-        
-        // set unique assertion id based on input
-        let current_timestamp = timestamp::now_microseconds();
 
         // refactor assertion id to u64 for convenience to fetch on frontend
+        // set unique assertion id based on input
         // let assertion_id = get_assertion_id(
         //     asserter_addr,
         //     claim, 
@@ -368,8 +366,9 @@ module truthbound_addr::data_asserter {
 
         // refactor assertion id to u64 for convenience to fetch on frontend
         let assertion_id = assertion_registry.next_assertion_id;
-         assertion_registry.next_assertion_id =  assertion_registry.next_assertion_id + 1;
+        assertion_registry.next_assertion_id =  assertion_registry.next_assertion_id + 1;
 
+        let current_timestamp = timestamp::now_microseconds();
         let expiration_time = current_timestamp + liveness;
 
         // create assertion
@@ -642,6 +641,7 @@ module truthbound_addr::data_asserter {
         )
     }
 
+    // refactor assertion id to u64 for convenience to fetch on frontend
     // Returns the unique identifier for this assertion. This identifier is used to identify the assertion.
     // note: originally used as an inline function, however due to the test coverage bug we use a view instead to reach 100% test coverage
     // #[view]

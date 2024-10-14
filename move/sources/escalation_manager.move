@@ -3,9 +3,9 @@
 //
 module truthbound_addr::escalation_manager {
 
-    use std::signer;
     use std::event;
     use std::vector;
+    use std::signer;
     use aptos_std::aptos_hash;
 
     use aptos_std::smart_table::{Self, SmartTable};

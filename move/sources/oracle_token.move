@@ -5,15 +5,16 @@
 
 module truthbound_addr::oracle_token {
 
-    use aptos_framework::object::{Self, Object, ExtendRef};
-    use aptos_framework::fungible_asset::{Self, MintRef, TransferRef, BurnRef, Metadata, FungibleAsset, FungibleStore };
-    use aptos_framework::primary_fungible_store;
-    use aptos_framework::dispatchable_fungible_asset;
-    use aptos_framework::function_info;
     use std::signer;
     use std::event;
     use std::option::{Self};
     use std::string::{Self, utf8};
+
+    use aptos_framework::function_info;
+    use aptos_framework::primary_fungible_store;
+    use aptos_framework::dispatchable_fungible_asset;
+    use aptos_framework::object::{Self, Object, ExtendRef};
+    use aptos_framework::fungible_asset::{Self, MintRef, TransferRef, BurnRef, Metadata, FungibleAsset, FungibleStore };
 
     // -----------------------------------
     // Seeds
