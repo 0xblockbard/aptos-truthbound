@@ -1,7 +1,7 @@
 //
 // Based on the Full Policy Escalation Manager in UMA
 //
-module optimistic_oracle_addr::escalation_manager {
+module truthbound_addr::escalation_manager {
 
     use std::signer;
     use std::event;

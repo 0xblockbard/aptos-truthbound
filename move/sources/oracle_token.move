@@ -3,7 +3,7 @@
 * Basic FA oracle token module to be used as main currency protocol token powering the oracles/markets/asserters
 */
 
-module optimistic_oracle_addr::oracle_token {
+module truthbound_addr::oracle_token {
 
     use aptos_framework::object::{Self, Object, ExtendRef};
     use aptos_framework::fungible_asset::{Self, MintRef, TransferRef, BurnRef, Metadata, FungibleAsset, FungibleStore };
@@ -83,7 +83,7 @@ module optimistic_oracle_addr::oracle_token {
     /* View Functions */
     #[view]
     public fun metadata_address(): address {
-        object::create_object_address(&@optimistic_oracle_addr, ASSET_SYMBOL)
+        object::create_object_address(&@truthbound_addr, ASSET_SYMBOL)
     }
 
     #[view]
@@ -93,7 +93,7 @@ module optimistic_oracle_addr::oracle_token {
 
     #[view]
     public fun token_store(): Object<FungibleStore> {
-        primary_fungible_store::ensure_primary_store_exists(@optimistic_oracle_addr, metadata())
+        primary_fungible_store::ensure_primary_store_exists(@truthbound_addr, metadata())
     }
 
     // -----------------------------------
@@ -242,7 +242,7 @@ module optimistic_oracle_addr::oracle_token {
     // -----------------------------------
 
     fun get_token_signer_addr() : address {
-        object::create_object_address(&@optimistic_oracle_addr, ASSET_SYMBOL)
+        object::create_object_address(&@truthbound_addr, ASSET_SYMBOL)
     }
 
     // -----------------------------------
@@ -254,7 +254,7 @@ module optimistic_oracle_addr::oracle_token {
         init_module(admin)
     }
 
-    #[test(source = @0xa11ce, destination = @0xb0b, mod_account = @optimistic_oracle_addr)]
+    #[test(source = @0xa11ce, destination = @0xb0b, mod_account = @truthbound_addr)]
     public entry fun test_end_to_end(
         source: signer,
         destination: signer,
@@ -280,7 +280,7 @@ module optimistic_oracle_addr::oracle_token {
         token_store();
     }
 
-    #[test(source = @0xa11ce, destination = @0xb0b, mod_account = @optimistic_oracle_addr)]
+    #[test(source = @0xa11ce, destination = @0xb0b, mod_account = @truthbound_addr)]
     #[expected_failure(abort_code = ERROR_NOT_ADMIN, location = Self)]
     public entry fun test_non_admin_cannot_mint(
         source: signer,
@@ -299,7 +299,7 @@ module optimistic_oracle_addr::oracle_token {
         mint(&source, destination_addr, 10);
     }
 
-    #[test(source = @0xa11ce, destination = @0xb0b, mod_account = @optimistic_oracle_addr)]
+    #[test(source = @0xa11ce, destination = @0xb0b, mod_account = @truthbound_addr)]
     #[expected_failure(abort_code = ERROR_NOT_ADMIN, location = Self)]
     public entry fun test_non_admin_cannot_burn(
         source: signer,

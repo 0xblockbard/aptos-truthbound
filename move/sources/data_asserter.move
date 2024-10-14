@@ -1,29 +1,25 @@
 //
-// Reference of UMA's optimistic oracle adapted for use on Aptos
-// This is the foundation of the prediction market contract for handling truth assertions
+// This is an adaptation of UMA Protocol's Optimistic Oracle Data Asserter contract for Aptos
 // By: 0xblockbard
 //
 
-module optimistic_oracle_addr::optimistic_oracle {
+module truthbound_addr::data_asserter {
 
-    use optimistic_oracle_addr::escalation_manager;
+    use truthbound_addr::escalation_manager;
 
-    use std::signer;
+    use std::bcs;
     use std::event;
     use std::vector;
-    
-    use std::bcs;
-    use aptos_std::aptos_hash;
-
+    use std::signer;
     use std::timestamp; 
     use std::option::{Self, Option};
 
+    use aptos_std::aptos_hash;
     use aptos_std::smart_table::{Self, SmartTable};
-    use aptos_framework::fungible_asset::{
-        Metadata
-    };
+
     use aptos_framework::object::{Self, Object};
     use aptos_framework::primary_fungible_store;
+    use aptos_framework::fungible_asset::{ Metadata };
 
     // -----------------------------------
     // Seeds
@@ -55,14 +51,30 @@ module optimistic_oracle_addr::optimistic_oracle {
 
     const NUMERICAL_TRUE: u8                    = 1; // Numerical representation of true
 
-    const DEFAULT_MIN_LIVENESS: u64             = 10000;
+    const DEFAULT_ASSERTION_LIVENESS: u64       = 7200;
+    const DEFAULT_IDENTIFIER: vector<u8>        = b"ASSERT_TRUTH";
+
+    const DEFAULT_MIN_LIVENESS: u64             = 3600;
     const DEFAULT_FEE: u64                      = 1000;
-    const DEFAULT_BURNED_BOND_PERCENTAGE: u64   = 1000;
-    const DEFAULT_TREASURY_ADDRESS: address     = @optimistic_oracle_addr;
+    const DEFAULT_BURNED_BOND_PERCENTAGE: u64   = 100; // 1%
+    const DEFAULT_TREASURY_ADDRESS: address     = @truthbound_addr;
     
     // -----------------------------------
     // Structs
     // -----------------------------------
+
+    /// DataAssertion Struct
+    struct DataAssertion has key, store, drop {
+        data_id: vector<u8>,     // The dataId that was asserted.
+        data: vector<u8>,        // This could be an arbitrary data type.
+        asserter: address,       // The address that made the assertion.
+        resolved: bool,          // Whether the assertion has been resolved.
+    }
+
+    /// AssertionsData Struct
+    struct AssertionsData has key, store {
+        assertions_data_table: SmartTable<u64, DataAssertion>,
+    }
 
     /// Assertion Struct
     struct Assertion has key, store {
@@ -78,11 +90,12 @@ module optimistic_oracle_addr::optimistic_oracle {
     }
 
     struct AssertionTable has key, store {
-        assertions: SmartTable<vector<u8>, Assertion> // assertion_id: vector<u8>
+        assertions: SmartTable<u64, Assertion> // assertion_id: vector<u8>
     }
 
     struct AssertionRegistry has key, store {
-        assertion_to_asserter: SmartTable<vector<u8>, address>
+        assertion_to_asserter: SmartTable<u64, address>,
+        next_assertion_id: u64
     }
 
     /// AdminProperties Struct 
@@ -110,7 +123,7 @@ module optimistic_oracle_addr::optimistic_oracle {
 
     #[event]
     struct AssertionMadeEvent has drop, store {
-        assertion_id: vector<u8>,
+        assertion_id: u64,
         claim: vector<u8>,
         identifier: vector<u8>,
         asserter: address,
@@ -122,17 +135,33 @@ module optimistic_oracle_addr::optimistic_oracle {
 
     #[event]
     struct AssertionDisputedEvent has drop, store {
-        assertion_id: vector<u8>,
+        assertion_id: u64,
         disputer: address
     }
 
     #[event]
     struct AssertionSettledEvent has drop, store {
-        assertion_id: vector<u8>,
+        assertion_id: u64,
         bond_recipient: address,
         disputed: bool,
         settlement_resolution: bool,
         settle_caller: address
+    }
+
+    #[event]
+    struct DataAssertedEvent has drop, store {
+        data_id: vector<u8>,
+        data: vector<u8>,
+        asserter: address,
+        assertion_id: u64
+    }
+
+    #[event]
+    struct DataAssertionResolvedEvent has drop, store {
+        data_id: vector<u8>,
+        data: vector<u8>,
+        asserter: address,
+        assertion_id: u64
     }
 
     // -----------------------------------
@@ -171,6 +200,12 @@ module optimistic_oracle_addr::optimistic_oracle {
         // init AssertionRegistry struct
         move_to(oracle_signer, AssertionRegistry {
             assertion_to_asserter: smart_table::new(),
+            next_assertion_id: 0
+        });
+
+        // init AssertionsData struct
+        move_to(oracle_signer, AssertionsData {
+            assertions_data_table: smart_table::new()
         });
         
     }
@@ -213,6 +248,64 @@ module optimistic_oracle_addr::optimistic_oracle {
     // General functions
     // ---------------
 
+    // With reference from UMA Protocol:
+    // Asserts data for a specific dataId on behalf of an asserter address.
+    // Data can be asserted many times with the same combination of arguments, resulting in unique assertionIds. This is
+    // because the block.timestamp is included in the claim. The consumer contract must store the returned assertionId
+    // identifiers to able to get the information using getData.
+    public entry fun assert_data_for(
+        asserter : &signer,
+        data_id: vector<u8>,
+        data: vector<u8>
+    ) acquires AssertionsData, AdminProperties, AssertionRegistry, AssertionTable {
+
+        let oracle_signer_addr  = get_oracle_signer_addr();
+        let asserter_addr       = signer::address_of(asserter);
+        let admin_properties    = borrow_global<AdminProperties>(oracle_signer_addr);
+
+        // calculate minimum bond
+        let minimum_bond = (DEFAULT_FEE * 10000) / DEFAULT_BURNED_BOND_PERCENTAGE;
+
+        // The claim we want to assert is the first argument of assertTruth. It must contain all of the relevant
+        // details so that anyone may verify the claim without having to read any further information on chain. As a
+        // result, the claim must include both the data id and data, as well as a set of instructions that allow anyone
+        // to verify the information in publicly available sources.
+        // See the UMIP corresponding to the defaultIdentifier used in the OptimisticOracleV3 "ASSERT_TRUTH" for more
+        // information on how to construct the claim.
+
+        let claim = compose_claim(data, data_id, asserter_addr);
+
+        // get assertion id - note: bond will be transferred internally
+        let assertion_id = assert_truth(
+            asserter, 
+            claim, 
+            admin_properties.min_liveness,
+            minimum_bond,
+            DEFAULT_IDENTIFIER
+        );
+
+        let assertions_data        = borrow_global_mut<AssertionsData>(oracle_signer_addr);
+
+        // store new AssertionData
+        // for convenience on the frontend for data retrieval, we use next_assertion_id instead of assertion id as the key
+        smart_table::add(&mut assertions_data.assertions_data_table, assertion_id, DataAssertion {
+            data_id,
+            data,
+            asserter: asserter_addr,
+            resolved: false,
+        });
+
+        // emit event for data asserted
+        event::emit(DataAssertedEvent {
+            data_id,
+            data,
+            asserter: asserter_addr,
+            assertion_id
+        });
+
+    }
+
+
     /**
      * @notice Asserts a truth about the world, using a custom configuration.
      * @dev The caller must approve this contract to spend at least bond amount of currency.
@@ -226,13 +319,13 @@ module optimistic_oracle_addr::optimistic_oracle {
      * @param identifier: to use for price requests in the event of a dispute. Must be pre-approved.
      * @return assertionId unique identifier for this assertion.
      */
-    public entry fun assert_truth(
+    fun assert_truth(
         asserter: &signer,
         claim: vector<u8>,
         liveness: u64,
         bond: u64,
         identifier: vector<u8>
-    ) acquires AdminProperties, AssertionTable, AssertionRegistry {
+    ) : u64 acquires AdminProperties, AssertionTable, AssertionRegistry {
 
         let oracle_signer_addr  = get_oracle_signer_addr();
         let assertion_registry  = borrow_global_mut<AssertionRegistry>(oracle_signer_addr);
@@ -262,26 +355,20 @@ module optimistic_oracle_addr::optimistic_oracle {
         
         // set unique assertion id based on input
         let current_timestamp = timestamp::now_microseconds();
-        let assertion_id = get_assertion_id_helper(
-            asserter_addr,
-            claim, 
-            current_timestamp,
-            bond,
-            liveness,
-            identifier
-        );
 
-        // verify assertion does not exist
-        if (smart_table::contains(&assertions_table.assertions, assertion_id)) {
-            abort ERROR_ASSERTION_ALREADY_EXISTS
-        };
+        // refactor assertion id to u64 for convenience to fetch on frontend
+        // let assertion_id = get_assertion_id(
+        //     asserter_addr,
+        //     claim, 
+        //     current_timestamp,
+        //     bond,
+        //     liveness,
+        //     identifier
+        // );
 
-        // verify bond is greater than minimum bond 
-        let minimum_bond = (admin_properties.default_fee * 10000) / admin_properties.burned_bond_percentage;
-        assert!(bond >= minimum_bond, ERROR_MINIMUM_BOND_NOT_REACHED);
-
-        // verify liveness is greater than minimum liveness 
-        assert!(liveness >= admin_properties.min_liveness, ERROR_MINIMUM_LIVENESS_NOT_REACHED);
+        // refactor assertion id to u64 for convenience to fetch on frontend
+        let assertion_id = assertion_registry.next_assertion_id;
+         assertion_registry.next_assertion_id =  assertion_registry.next_assertion_id + 1;
 
         let expiration_time = current_timestamp + liveness;
 
@@ -320,6 +407,7 @@ module optimistic_oracle_addr::optimistic_oracle {
             bond
         });
 
+        assertion_id
     }
 
 
@@ -331,7 +419,7 @@ module optimistic_oracle_addr::optimistic_oracle {
      */
     public entry fun dispute_assertion(
         disputer : &signer,
-        assertion_id : vector<u8>,
+        assertion_id : u64,
     ) acquires AdminProperties, AssertionTable, AssertionRegistry {
 
         let oracle_signer_addr  = get_oracle_signer_addr();
@@ -386,16 +474,17 @@ module optimistic_oracle_addr::optimistic_oracle {
      */
     public entry fun settle_assertion(
         settle_caller: &signer,
-        assertion_id: vector<u8>
-    ) acquires AssertionTable, AssertionRegistry, OracleSigner, AdminProperties {
+        assertion_id: u64
+    ) acquires AssertionTable, AssertionsData, AssertionRegistry, OracleSigner, AdminProperties {
 
         let oracle_signer_addr = get_oracle_signer_addr();
         let oracle_signer      = get_oracle_signer(oracle_signer_addr);
         let assertion_registry = borrow_global_mut<AssertionRegistry>(oracle_signer_addr);
+        let assertions_data    = borrow_global_mut<AssertionsData>(oracle_signer_addr);
         let admin_properties   = borrow_global<AdminProperties>(oracle_signer_addr);
         let currency_metadata  = option::destroy_some(admin_properties.currency_metadata);
         let current_timestamp  = timestamp::now_microseconds();
-
+        
         // get asserter address from registry
         let asserter_addr       = *smart_table::borrow(&assertion_registry.assertion_to_asserter, assertion_id);
         
@@ -428,6 +517,19 @@ module optimistic_oracle_addr::optimistic_oracle {
                 settle_caller: signer::address_of(settle_caller)
             });
 
+            // resolve data assertion
+            let data_assertion  = smart_table::borrow_mut(&mut assertions_data.assertions_data_table, assertion_id);
+
+            data_assertion.resolved = true;
+
+            // emit event for assertion settled
+            event::emit(DataAssertionResolvedEvent {
+                data_id: data_assertion.data_id,
+                data: data_assertion.data,
+                asserter: data_assertion.asserter,
+                assertion_id
+            });
+            
         } else {
             // there is a dispute
 
@@ -441,11 +543,30 @@ module optimistic_oracle_addr::optimistic_oracle {
 
             let bond_recipient;
             let settlement_resolution = false;
+            let data_assertion        = smart_table::borrow_mut(&mut assertions_data.assertions_data_table, assertion_id);
+
             if(resolution == NUMERICAL_TRUE){
                 bond_recipient = assertion.asserter;
                 settlement_resolution = true;
+
+                // resolve data assertion
+                data_assertion.resolved = true;
+
+                // emit event for assertion settled
+                event::emit(DataAssertionResolvedEvent {
+                    data_id: data_assertion.data_id,
+                    data: data_assertion.data,
+                    asserter: data_assertion.asserter,
+                    assertion_id
+                });
+                
             } else {
+                
                 bond_recipient = option::destroy_some(assertion.disputer);
+
+                // delete the data assertion if it was false to save gas.
+                smart_table::remove(&mut assertions_data.assertions_data_table, assertion_id);
+
             };
 
             // Calculate oracle fee and the remaining amount of bonds to send to the correct party (asserter or disputer).
@@ -453,8 +574,8 @@ module optimistic_oracle_addr::optimistic_oracle {
             let bond_recipient_amount = (assertion.bond * 2) - oracle_fee; 
 
             // transfer bond to treasury and bond recipient
-            primary_fungible_store::transfer(&oracle_signer, currency_metadata, admin_properties.treasury_address, oracle_fee);
-            primary_fungible_store::transfer(&oracle_signer, currency_metadata, bond_recipient, bond_recipient_amount);
+            primary_fungible_store::transfer(&oracle_signer, currency_metadata, admin_properties.treasury_address, (oracle_fee as u64));
+            primary_fungible_store::transfer(&oracle_signer, currency_metadata, bond_recipient, (bond_recipient_amount as u64));
 
             // emit event for assertion settled
             event::emit(AssertionSettledEvent {
@@ -491,27 +612,9 @@ module optimistic_oracle_addr::optimistic_oracle {
         )
     }
 
-    #[view]
-    public fun get_assertion_id(
-        asserter: address,
-        claim: vector<u8>, 
-        time: u64,
-        bond: u64, 
-        liveness: u64,
-        identifier: vector<u8>
-    ) : vector<u8> {
-        get_assertion_id_helper(
-            asserter,
-            claim, 
-            time,
-            bond,
-            liveness,
-            identifier
-        )
-    }
 
     #[view]
-    public fun get_assertion(assertion_id: vector<u8>) : (
+    public fun get_assertion(assertion_id: u64) : (
         address, bool, bool, u64, u64, u64, vector<u8>, u64, Option<address>
     ) acquires AssertionRegistry, AssertionTable {
 
@@ -541,29 +644,40 @@ module optimistic_oracle_addr::optimistic_oracle {
 
     // Returns the unique identifier for this assertion. This identifier is used to identify the assertion.
     // note: originally used as an inline function, however due to the test coverage bug we use a view instead to reach 100% test coverage
+    // #[view]
+    // public fun get_assertion_id(
+    //     asserter: address,
+    //     claim: vector<u8>, 
+    //     time: u64,
+    //     bond: u64, 
+    //     liveness: u64,
+    //     identifier: vector<u8>
+    // ): vector<u8> {
+        
+    //     let asserter_bytes = bcs::to_bytes<address>(&asserter);
+    //     let time_bytes     = bcs::to_bytes<u64>(&time);
+    //     let bond_bytes     = bcs::to_bytes<u64>(&bond);
+    //     let liveness_bytes = bcs::to_bytes<u64>(&liveness);
+        
+    //     let assertion_id_vector = vector::empty<u8>();
+    //     vector::append(&mut assertion_id_vector, asserter_bytes);
+    //     vector::append(&mut assertion_id_vector, claim);
+    //     vector::append(&mut assertion_id_vector, time_bytes);
+    //     vector::append(&mut assertion_id_vector, bond_bytes);
+    //     vector::append(&mut assertion_id_vector, liveness_bytes);
+    //     vector::append(&mut assertion_id_vector, identifier);
+    //     aptos_hash::keccak256(assertion_id_vector)
+    // }
+
     #[view]
-    public fun get_assertion_id_helper(
-        asserter: address,
-        claim: vector<u8>, 
-        time: u64,
-        bond: u64, 
-        liveness: u64,
-        identifier: vector<u8>
-    ): vector<u8> {
+    public fun get_next_assertion_id(): (
+        u64
+    ) acquires AssertionRegistry {
         
-        let asserter_bytes = bcs::to_bytes<address>(&asserter);
-        let time_bytes     = bcs::to_bytes<u64>(&time);
-        let bond_bytes     = bcs::to_bytes<u64>(&bond);
-        let liveness_bytes = bcs::to_bytes<u64>(&liveness);
+        let oracle_signer_addr = get_oracle_signer_addr();
+        let assertion_registry = borrow_global<AssertionRegistry>(oracle_signer_addr);
         
-        let assertion_id_vector = vector::empty<u8>();
-        vector::append(&mut assertion_id_vector, asserter_bytes);
-        vector::append(&mut assertion_id_vector, claim);
-        vector::append(&mut assertion_id_vector, time_bytes);
-        vector::append(&mut assertion_id_vector, bond_bytes);
-        vector::append(&mut assertion_id_vector, liveness_bytes);
-        vector::append(&mut assertion_id_vector, identifier);
-        aptos_hash::keccak256(assertion_id_vector)
+        assertion_registry.next_assertion_id
     }
 
 
@@ -571,13 +685,72 @@ module optimistic_oracle_addr::optimistic_oracle {
     // Returns ancillary data for the Oracle request containing assertionId and asserter.
     // note: originally used as an inline function, however due to the test coverage bug we use a view instead to reach 100% test coverage
     #[view]
-    public fun stamp_assertion(assertion_id: vector<u8>, asserter: address) : vector<u8> {
+    public fun stamp_assertion(assertion_id: u64, asserter: address) : vector<u8> {
+        let assertion_id_bytes = bcs::to_bytes<u64>(&assertion_id);
         let ancillary_data_vector = vector::empty<u8>();
         vector::append(&mut ancillary_data_vector, b"assertionId: ");
-        vector::append(&mut ancillary_data_vector, assertion_id);
+        vector::append(&mut ancillary_data_vector, assertion_id_bytes);
         vector::append(&mut ancillary_data_vector, b",ooAsserter:");
         vector::append(&mut ancillary_data_vector, bcs::to_bytes<address>(&asserter));
         ancillary_data_vector
+    }
+
+
+    #[view]
+    // For a given assertionId, returns a boolean indicating whether the data is accessible and the data itself.
+    // For convenience on the frontend for data retrieval, we use u64 instead of the assertion id bytes in our modification
+    public fun get_data(assertion_id: u64) : (
+        bool, vector<u8>
+    ) acquires AssertionsData {
+
+        let oracle_signer_addr  = get_oracle_signer_addr();
+        let assertions_data     = borrow_global<AssertionsData>(oracle_signer_addr);
+
+        if(!smart_table::contains(&assertions_data.assertions_data_table, assertion_id)){
+            (
+                false, 
+                vector::empty<u8>()
+            )
+        } else {
+            let data_assertion = smart_table::borrow(&assertions_data.assertions_data_table, assertion_id);
+            if(data_assertion.resolved == true){
+                (
+                    true, 
+                    data_assertion.data
+                )
+            } else {
+                (
+                    false, 
+                    vector::empty<u8>()
+                )
+            }
+            
+        }
+    }
+
+
+    // compose data claim
+    // note: originally used as an inline function, however due to the test coverage bug we use a view instead to reach 100% test coverage
+    #[view]
+    public fun compose_claim(data: vector<u8>, data_id: vector<u8>, asserter_addr: address) : vector<u8> {
+
+        let oracle_signer_addr  = get_oracle_signer_addr();
+        let current_timestamp   = timestamp::now_microseconds();
+        let time_bytes          = bcs::to_bytes<u64>(&current_timestamp);
+
+        let claim_data_vector = vector::empty<u8>();
+        vector::append(&mut claim_data_vector, b"Data asserted: 0x");
+        vector::append(&mut claim_data_vector, data);
+        vector::append(&mut claim_data_vector, b" for dataId: 0x");
+        vector::append(&mut claim_data_vector, data_id);
+        vector::append(&mut claim_data_vector, b" and asserter: 0x");
+        vector::append(&mut claim_data_vector, bcs::to_bytes<address>(&asserter_addr));
+        vector::append(&mut claim_data_vector, b" at timestamp: ");
+        vector::append(&mut claim_data_vector, time_bytes);
+        vector::append(&mut claim_data_vector, b" in the DataAsserter contract at 0x");
+        vector::append(&mut claim_data_vector, bcs::to_bytes<address>(&oracle_signer_addr));
+        vector::append(&mut claim_data_vector, b" is valid");
+        aptos_hash::keccak256(claim_data_vector)
     }
 
     // -----------------------------------
@@ -585,7 +758,7 @@ module optimistic_oracle_addr::optimistic_oracle {
     // -----------------------------------
 
     fun get_oracle_signer_addr(): address {
-        object::create_object_address(&@optimistic_oracle_addr, APP_OBJECT_SEED)
+        object::create_object_address(&@truthbound_addr, APP_OBJECT_SEED)
     }
 
     fun get_oracle_signer(oracle_signer_addr: address): signer acquires OracleSigner {
@@ -602,33 +775,33 @@ module optimistic_oracle_addr::optimistic_oracle {
     #[test_only]
     public fun setup_test(
         aptos_framework : &signer, 
-        optimistic_oracle : &signer,
+        truthbound : &signer,
         user_one : &signer,
         user_two : &signer,
     ) : (address, address, address) {
 
-        init_module(optimistic_oracle);
+        init_module(truthbound);
 
         timestamp::set_time_has_started_for_testing(aptos_framework);
 
         // get addresses
-        let optimistic_oracle_addr   = signer::address_of(optimistic_oracle);
+        let truthbound_addr   = signer::address_of(truthbound);
         let user_one_addr            = signer::address_of(user_one);
         let user_two_addr            = signer::address_of(user_two);
 
         // create accounts
-        account::create_account_for_test(optimistic_oracle_addr);
+        account::create_account_for_test(truthbound_addr);
         account::create_account_for_test(user_one_addr);
         account::create_account_for_test(user_two_addr);
 
-        (optimistic_oracle_addr, user_one_addr, user_two_addr)
+        (truthbound_addr, user_one_addr, user_two_addr)
     }
 
 
     #[view]
     #[test_only]
     public fun test_AssertionMadeEvent(
-        assertion_id: vector<u8>, 
+        assertion_id: u64,
         claim: vector<u8>,
         identifier: vector<u8>,
         asserter: address,
@@ -654,7 +827,7 @@ module optimistic_oracle_addr::optimistic_oracle {
     #[view]
     #[test_only]
     public fun test_AssertionDisputedEvent(
-        assertion_id: vector<u8>, 
+        assertion_id: u64,
         disputer: address
     ): AssertionDisputedEvent {
         let event = AssertionDisputedEvent{
@@ -668,7 +841,7 @@ module optimistic_oracle_addr::optimistic_oracle {
     #[view]
     #[test_only]
     public fun test_AssertionSettledEvent(
-        assertion_id: vector<u8>, 
+        assertion_id: u64,
         bond_recipient: address,
         disputed: bool,
         settlement_resolution: bool,
@@ -680,6 +853,40 @@ module optimistic_oracle_addr::optimistic_oracle {
             disputed,
             settlement_resolution,
             settle_caller
+        };
+        return event
+    }
+
+    #[view]
+    #[test_only]
+    public fun test_DataAssertedEvent(
+        data_id: vector<u8>,
+        data: vector<u8>,
+        asserter: address,
+        assertion_id: u64
+    ): DataAssertedEvent {
+        let event = DataAssertedEvent{
+            data_id,
+            data,
+            asserter,
+            assertion_id
+        };
+        return event
+    }
+
+    #[view]
+    #[test_only]
+    public fun test_DataAssertionResolvedEvent(
+        data_id: vector<u8>,
+        data: vector<u8>,
+        asserter: address,
+        assertion_id: u64
+    ): DataAssertionResolvedEvent {
+        let event = DataAssertionResolvedEvent{
+            data_id,
+            data,
+            asserter,
+            assertion_id
         };
         return event
     }
