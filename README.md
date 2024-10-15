@@ -14,6 +14,8 @@ For instance, data related to real-world infrastructure—like energy usage or a
 
 By bridging the digital and physical worlds, TruthBound enables DePIN projects to reliably bring and use all forms of data on-chain, expanding possibilities for decentralised networks to manage and verify real-world infrastructure data on the Aptos blockchain. 
 
+![Truthbound](https://res.cloudinary.com/blockbard/image/upload/c_scale,w_auto,q_auto,f_auto,fl_lossy/v1729017483/truthbound-home-1_tlaqkp.png)
+
 ## Data Assertion Flow
 
 This is how off-chain data may be asserted on-chain using the TruthBound Data Asserter: 
@@ -46,18 +48,11 @@ This data assertion flow ensures that off-chain data is carefully validated befo
 
 ## Demo MVP
 
-The Truthbound demo is accessible at https://truthbound.xyz. The demo showcases sample transaction policies that have been pre-generated for sample purposes to showcase our functionality.
-
-Features:
-Wallet Integration: Users can connect their Aptos wallets to interact with the platform on testnet
-
-Once an outcome token has been bought or sold successfully, the transaction is recorded on the blockchain, and the outcome token prices will be updated to reflect the new prices. 
+The Truthbound demo is accessible at https://truthbound.xyz. The demo showcases sample data asserted that have been pre-generated for sample purposes to showcase our functionality.
 
 The frontend demo for Truthbound is maintained in a separate repository to ensure that the Move smart contracts remain focused and well-organised. 
 
-It can be found here: Truthbound Frontend Github
-
-<!-- ![Welcome](https://res.cloudinary.com/blockbard/image/upload/c_scale,w_auto,q_auto,f_auto,fl_lossy/v1728917557/get-started-screenshot_j8ngmp.png) -->
+It can be found here: [Truthbound Frontend Github](https://github.com/0xblockbard/aptos-truthbound-frontend)
 
 ## Tech Overview and Considerations
 
@@ -133,20 +128,6 @@ Truthbound has comprehensive test coverage, with 100% of the codebase thoroughly
 The following section provides a breakdown of the tests that validate each function and feature, affirming that Truthbound performs as expected under all intended use cases.
 
 ![Code Coverage](https://res.cloudinary.com/blockbard/image/upload/c_scale,w_auto,q_auto,f_auto,fl_lossy/v1728976608/truthbound-code-coverage_knrwhh.png)
-
-## Dummy Data Script
-
-We have also included a dummy data script to populate the Data Asserter Demo MVP with sample data assertions. This helps to demonstrate our features and provides a realistic view of how markets appear and function on the site.
-
-To run the dummy data script after deploying a local instance of our frontend and Data Asserter package, follow these steps:
-
-```
-# compile the dummy data script and get the script path location
-aptos move compile-script
-
-# copy the script path location and paste it at the end (replace path_to_script.mv)
-aptos move run-script --compiled-script-path /path_to_script.mv
-```
 
 ## Future Plans
 
